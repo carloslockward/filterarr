@@ -13,7 +13,7 @@ It works with [qBittorrent](https://www.qbittorrent.org/), [Sonarr](https://sona
 
 ## Why?
 
-Many unwanted or unsafe torrents—such as those containing `.rar` archives or dangerous Windows shortcut files (`.lnk`) can be picked up automatically by Sonarr, Radarr, or Lidarr. These files can disrupt your media automation, causing missing or unimported episodes and movies, and may even pose security risks. filterarr helps keep your library safer and your automation cleaner by blocking such torrents at download time.
+Many unwanted or unsafe torrents, such as those containing `.rar` archives or dangerous Windows shortcut files (`.lnk`) can be picked up automatically by Sonarr or Radarr. These files can disrupt your media automation, causing missing or unimported episodes and movies, and may even pose security risks. filterarr helps keep your library safer and your automation cleaner by blocking such torrents at download time.
 
 ## License
 
