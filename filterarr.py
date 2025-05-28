@@ -3,13 +3,16 @@ import fnmatch
 import sys
 import os
 import time
+import logging
 from urllib.parse import urljoin
+
+logger = logging.getLogger("filterarr")
 
 
 def get_env_var(name, default=None, required=False):
     val = os.environ.get(name, default)
     if val is None and required:
-        print(f"Environment variable '{name}' is required.")
+        logger.error(f"Environment variable '{name}' is required.")
         sys.exit(1)
     return val
 
@@ -64,12 +67,12 @@ def mark_sonarr_history_id_as_failed(sonarr_url, api_key, history_id):
     try:
         resp = requests.post(url, headers={"X-Api-Key": api_key})
         if resp.ok:
-            print(f"> Marked as failed in Sonarr: history id {history_id}")
+            logger.debug(f"> Marked as failed in Sonarr: history id {history_id}")
         else:
-            print(f"> Sonarr failed to mark as failed: {resp.text}")
+            logger.error(f"> Sonarr failed to mark id {history_id} as failed: {resp.text}")
         return resp.ok
     except Exception as e:
-        print(f"Error marking as failed in Sonarr: {e}")
+        logger.error(f"Error marking as failed in Sonarr: {e}")
         return False
 
 
@@ -78,12 +81,12 @@ def mark_radarr_history_id_as_failed(radarr_url, api_key, history_id):
     try:
         resp = requests.post(url, headers={"X-Api-Key": api_key})
         if resp.ok:
-            print(f"> Marked as failed in Radarr: history id {history_id}")
+            logger.debug(f"> Marked as failed in Radarr: history id {history_id}")
         else:
-            print(f"> Radarr failed to mark as failed: {resp.text}")
+            logger.error(f"> Radarr failed to mark id {history_id} as failed: {resp.text}")
         return resp.ok
     except Exception as e:
-        print(f"Error marking as failed in Radarr: {e}")
+        logger.error(f"Error marking as failed in Radarr: {e}")
         return False
 
 
@@ -104,7 +107,7 @@ def get_paged_grab_history(url, api_key, type_name):
         if len(recs) < page_size:
             break
         page += 1
-    print(f"{type_name}: {len(records)} history records found.")
+    logger.debug(f"{type_name}: {len(records)} history records found.")
     return records
 
 
@@ -134,23 +137,23 @@ def main(
     sonarr_url = f"http://{sonarr_host}:{sonarr_port}"
     radarr_url = f"http://{radarr_host}:{radarr_port}"
 
-    print("Fetching qBittorrent torrents...")
+    logger.debug("Fetching qBittorrent torrents...")
     torrents = get_qb_torrents(session, qb_url)
-    print("Fetching Sonarr/Radarr histories...")
+    logger.debug("Fetching Sonarr/Radarr histories...")
     try:
         sonarr_hist = get_sonarr_history(sonarr_url, sonarr_api)
     except Exception as e:
-        print(f"Warning: could not fetch Sonarr history: {e}")
+        logger.warning(f"Warning: could not fetch Sonarr history: {e}")
         sonarr_hist = []
     try:
         radarr_hist = get_radarr_history(radarr_url, radarr_api)
     except Exception as e:
-        print(f"Warning: could not fetch Radarr history: {e}")
+        logger.warning(f"Warning: could not fetch Radarr history: {e}")
         radarr_hist = []
     sonarr_hashes = {entry.get("downloadId", "").lower(): entry for entry in sonarr_hist}
     radarr_hashes = {entry.get("downloadId", "").lower(): entry for entry in radarr_hist}
     any_match = False
-    print("Checking torrents...")
+    logger.debug("Checking torrents...")
     for torrent in torrents:
         cat = (torrent.get("category") or "").lower()
         if cat not in ["tv-sonarr", "radarr"]:
@@ -159,25 +162,24 @@ def main(
         matched, bad_file = match_blacklist(files, blacklisted_extensions)
         if matched:
             any_match = True
-            print(f"> Found blacklisted file {bad_file} in {torrent['name']}! Deleting torrent.")
+            logger.info(
+                f"> Found blacklisted file {bad_file} in {torrent['name']}! Deleting torrent."
+            )
             delete_qb_torrent(session, qb_url, torrent["hash"])
             info_hash = torrent["hash"].lower()
             if cat == "tv-sonarr":
                 sonarr_entry = sonarr_hashes.get(info_hash)
                 if sonarr_entry:
-                    print("Sonarr Blocklist")
                     mark_sonarr_history_id_as_failed(sonarr_url, sonarr_api, sonarr_entry.get("id"))
                 else:
-                    print("> No Sonarr grabbed-history found for this torrent.")
+                    logger.warning(f"> No Sonarr grabbed-history found for {torrent['name']}")
             elif cat == "radarr":
                 radarr_entry = radarr_hashes.get(info_hash)
                 if radarr_entry:
-                    print("Radarr Blocklist")
                     mark_radarr_history_id_as_failed(radarr_url, radarr_api, radarr_entry.get("id"))
                 else:
-                    print("> No Radarr grabbed-history found for this torrent.")
-    if not any_match:
-        print("All torrents are valid!")
+                    logger.warning(f"> No Radarr grabbed-history found for {torrent['name']}")
+    return any_match
 
 
 if __name__ == "__main__":
@@ -194,25 +196,33 @@ if __name__ == "__main__":
     radarr_port = get_env_var("RADARR_PORT", required=True)
     radarr_api = get_env_var("RADARR_API", required=True)
     interval = int(get_env_var("POLLING_INTERVAL", 600))
+    LOG_LEVEL = get_env_var("LOG_LEVEL", "INFO").upper()
+
+    logger.setLevel(LOG_LEVEL)
+    logger.addHandler(logging.StreamHandler())
 
     ext_str = get_env_var("BLACKLISTED_EXTENSIONS", ".r*,.zip*,.lnk,.arj")
     blacklisted_extensions = [x.strip() for x in ext_str.split(",") if x.strip()]
-    print(f"filterarr will run every {interval} seconds.")
-    print(f"Blacklisted extensions: {blacklisted_extensions}")
+    logger.info(f"filterarr will run every {interval} seconds.")
+    logger.info(f"Blacklisted extensions: {blacklisted_extensions}\n")
 
     session = requests.Session()
 
     qb_url = f"http://{qb_host}:{qb_port}"
-    print("Logging in to qBittorrent...")
+    logger.debug("Logging in to qBittorrent...")
     if not qb_login(session, qb_url, qb_user, qb_pass):
-        print("qBittorrent login failed!")
+        logger.error("qBittorrent login failed!")
         sys.exit(1)
+
+    logger.debug("Successfully logged in to qBittorrent!")
+
+    valid_logged = False
 
     try:
         while True:
             start = time.time()
             try:
-                main(
+                res = main(
                     session,
                     qb_host,
                     qb_port,
@@ -224,13 +234,18 @@ if __name__ == "__main__":
                     radarr_api,
                     blacklisted_extensions,
                 )
+                if res:
+                    valid_logged = False
+                if not valid_logged:
+                    logger.info("All torrents are valid!")
+                    valid_logged = True
             except Exception as e:
-                print("Unhandled error:", e)
+                logger.error("Unhandled error:", e)
             elapsed = time.time() - start
             if interval > 0:
                 to_sleep = max(0, interval - elapsed)
                 if to_sleep:
-                    print(f"Waiting {int(to_sleep)} seconds for next scan...\n")
+                    logger.debug(f"Waiting {int(to_sleep)} seconds for next scan...\n")
                     time.sleep(to_sleep)
             else:
                 break
