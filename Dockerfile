@@ -6,8 +6,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your script into the image
+# Copy the script into the image
 COPY filterarr.py .
 
-# By default, run your script
+# By default, run the script
 ENTRYPOINT ["python", "filterarr.py"]

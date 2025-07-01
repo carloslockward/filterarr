@@ -239,6 +239,12 @@ if __name__ == "__main__":
                 if not valid_logged:
                     logger.info("All torrents are valid!")
                     valid_logged = True
+            except requests.HTTPError as httpe:
+                if "403" in str(httpe):
+                    logger.debug("qBittorrent needs re-auth")
+                    session = requests.Session()
+                    if not qb_login(session, qb_url, qb_user, qb_pass):
+                        logger.error("qBittorrent login failed! Retrying...")
             except Exception as e:
                 logger.error("Unhandled error:", e)
             elapsed = time.time() - start
