@@ -7,6 +7,7 @@ import logging
 from urllib.parse import urljoin
 
 logger = logging.getLogger("filterarr")
+REQUEST_TIMEOUT = 10  # default, overridden by REQUEST_TIMEOUT env var at runtime
 
 
 def get_env_var(name, default=None, required=False):
@@ -17,28 +18,52 @@ def get_env_var(name, default=None, required=False):
     return val
 
 
+def normalize_extension_patterns(patterns):
+    out = []
+    for pat in patterns:
+        pat = pat.strip().lower()
+        if not pat:
+            continue
+        if pat.startswith("*."):
+            pat = pat[1:]
+        elif not pat.startswith("."):
+            pat = "." + pat
+        out.append(pat)
+    return out
+
+
 def qb_login(session, url, username, password):
-    resp = session.post(
-        urljoin(url, "/api/v2/auth/login"), data={"username": username, "password": password}
-    )
-    return resp.ok
+    try:
+        resp = session.post(
+            urljoin(url, "/api/v2/auth/login"),
+            data={"username": username, "password": password},
+            timeout=REQUEST_TIMEOUT,
+        )
+        return resp.status_code == 200 and resp.text.strip() == "Ok."
+    except requests.RequestException:
+        return False
 
 
 def get_qb_torrents(session, url):
-    resp = session.get(urljoin(url, "/api/v2/torrents/info"))
+    resp = session.get(urljoin(url, "/api/v2/torrents/info"), timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
 
 def get_qb_torrent_files(session, url, hash_):
-    resp = session.get(urljoin(url, f"/api/v2/torrents/files?hash={hash_}"))
+    resp = session.get(
+        urljoin(url, f"/api/v2/torrents/files?hash={hash_}"),
+        timeout=REQUEST_TIMEOUT,
+    )
     resp.raise_for_status()
     return resp.json()
 
 
 def delete_qb_torrent(session, url, hash_):
     resp = session.post(
-        urljoin(url, "/api/v2/torrents/delete"), data={"hashes": hash_, "deleteFiles": True}
+        urljoin(url, "/api/v2/torrents/delete"),
+        data={"hashes": hash_, "deleteFiles": True},
+        timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
     return resp.ok
@@ -52,12 +77,13 @@ def match_blacklist(files, patterns):
     """
     Returns (True, file) if any file extension matches one of the patterns.
     Only compares against the **file's extension**. Pattern wildcards supported.
+    Patterns are expected to be pre-normalized (lowercase, leading dot).
     """
     for file in files:
         fname = file["name"]
         ext = get_file_extension(fname)
         for pat in patterns:
-            if fnmatch.fnmatch(ext, pat.lstrip("*")):  # *.r* pattern -> .r*
+            if fnmatch.fnmatchcase(ext, pat):
                 return True, fname
     return False, None
 
@@ -65,7 +91,11 @@ def match_blacklist(files, patterns):
 def mark_sonarr_history_id_as_failed(sonarr_url, api_key, history_id):
     url = urljoin(sonarr_url, f"/api/v3/history/failed/{history_id}")
     try:
-        resp = requests.post(url, headers={"X-Api-Key": api_key})
+        resp = requests.post(
+            url,
+            headers={"X-Api-Key": api_key},
+            timeout=REQUEST_TIMEOUT,
+        )
         if resp.ok:
             logger.debug(f"> Marked as failed in Sonarr: history id {history_id}")
         else:
@@ -79,7 +109,11 @@ def mark_sonarr_history_id_as_failed(sonarr_url, api_key, history_id):
 def mark_radarr_history_id_as_failed(radarr_url, api_key, history_id):
     url = urljoin(radarr_url, f"/api/v3/history/failed/{history_id}")
     try:
-        resp = requests.post(url, headers={"X-Api-Key": api_key})
+        resp = requests.post(
+            url,
+            headers={"X-Api-Key": api_key},
+            timeout=REQUEST_TIMEOUT,
+        )
         if resp.ok:
             logger.debug(f"> Marked as failed in Radarr: history id {history_id}")
         else:
@@ -97,7 +131,7 @@ def get_paged_grab_history(url, api_key, type_name):
     page_size = 100
     while True:
         params = {"page": page, "pageSize": page_size, "eventType": [1]}
-        resp = requests.get(url, headers=headers, params=params)
+        resp = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         recs = data["records"]
@@ -197,12 +231,15 @@ if __name__ == "__main__":
     radarr_api = get_env_var("RADARR_API", required=True)
     interval = int(get_env_var("POLLING_INTERVAL", 600))
     LOG_LEVEL = get_env_var("LOG_LEVEL", "INFO").upper()
+    REQUEST_TIMEOUT = int(get_env_var("REQUEST_TIMEOUT", 10))
 
     logger.setLevel(LOG_LEVEL)
     logger.addHandler(logging.StreamHandler())
 
     ext_str = get_env_var("BLACKLISTED_EXTENSIONS", ".r*,.zip*,.lnk,.arj")
-    blacklisted_extensions = [x.strip() for x in ext_str.split(",") if x.strip()]
+    blacklisted_extensions = normalize_extension_patterns(
+        [x.strip() for x in ext_str.split(",") if x.strip()]
+    )
     logger.info(f"filterarr will run every {interval} seconds.")
     logger.info(f"Blacklisted extensions: {blacklisted_extensions}\n")
 
@@ -210,9 +247,9 @@ if __name__ == "__main__":
 
     qb_url = f"http://{qb_host}:{qb_port}"
     logger.debug("Logging in to qBittorrent...")
-    if not qb_login(session, qb_url, qb_user, qb_pass):
-        logger.error("qBittorrent login failed!")
-        sys.exit(1)
+    while not qb_login(session, qb_url, qb_user, qb_pass):
+        logger.warning("qBittorrent unavailable/login failed, retrying in 10s...")
+        time.sleep(10)
 
     logger.debug("Successfully logged in to qBittorrent!")
 
@@ -240,13 +277,17 @@ if __name__ == "__main__":
                     logger.info("All torrents are valid!")
                     valid_logged = True
             except requests.HTTPError as httpe:
-                if "403" in str(httpe):
-                    logger.debug("qBittorrent needs re-auth")
+                status = httpe.response.status_code if httpe.response is not None else None
+                if status == 403:
+                    logger.debug("qBittorrent needs re-auth, reconnecting...")
+                    session.close()
                     session = requests.Session()
-                    if not qb_login(session, qb_url, qb_user, qb_pass):
-                        logger.error("qBittorrent login failed! Retrying...")
-            except Exception as e:
-                logger.error("Unhandled error:", e)
+                    while not qb_login(session, qb_url, qb_user, qb_pass):
+                        logger.warning("qBittorrent re-auth failed, retrying in 10s...")
+                        time.sleep(10)
+                    logger.debug("qBittorrent re-auth successful!")
+            except Exception:
+                logger.exception("Unhandled error")
             elapsed = time.time() - start
             if interval > 0:
                 to_sleep = max(0, interval - elapsed)
