@@ -39,8 +39,16 @@ def qb_login(session, url, username, password):
             data={"username": username, "password": password},
             timeout=REQUEST_TIMEOUT,
         )
-        return resp.status_code == 200 and resp.text.strip() == "Ok."
+        logger.debug(f"Response: {resp}")
+        if resp:
+            if resp.status_code == 403:
+                logger.error(f"qBittorrent: User's IP is banned for too many failed login attempts")
+            return resp.ok
+        else:
+            return False
+        
     except requests.RequestException:
+        logger.exception()
         return False
 
 
